@@ -152,10 +152,12 @@ async def main():
     w = WashingMachine(serial='SN-001')
     async with aiomqtt.Client("broker.hivemq.com") as client:
         await asyncio.gather(listen(w, client) , CoroWashingMachine(w, client))
-        
-asyncio.run(main())
-    w = WashingMachine(serial='SN-001')
-    async with aiomqtt.Client("broker.hivemq.com") as client:
-        await asyncio.gather(listen(w, client) , CoroWashingMachine(w, client))
-        
+
+import sys
+import os
+# Change to the "Selector" event loop if platform is Windows
+if sys.platform.lower() == "win32" or os.name.lower() == "nt":
+    from asyncio import set_event_loop_policy, WindowsSelectorEventLoopPolicy
+    set_event_loop_policy(WindowsSelectorEventLoopPolicy())
+
 asyncio.run(main())
