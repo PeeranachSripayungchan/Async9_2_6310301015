@@ -50,7 +50,10 @@ async def Running(w, action):
 
     if action == "FILLWATER":
         # Simulate filling water
-        await asyncio.sleep(10)  # Adjust the time as needed
+        await asyncio.sleep(10) 
+    if action == "HEATMAKER":
+        # Simulate heating
+        await asyncio.sleep(10) 
 
 
 async def CoroWashingMachine(w, client):
@@ -146,6 +149,11 @@ async def make_request_with_timeout():
     await unrelated_code()
 '''
 async def main():
+    w = WashingMachine(serial='SN-001')
+    async with aiomqtt.Client("broker.hivemq.com") as client:
+        await asyncio.gather(listen(w, client) , CoroWashingMachine(w, client))
+        
+asyncio.run(main())
     w = WashingMachine(serial='SN-001')
     async with aiomqtt.Client("broker.hivemq.com") as client:
         await asyncio.gather(listen(w, client) , CoroWashingMachine(w, client))
