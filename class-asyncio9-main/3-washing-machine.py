@@ -4,158 +4,149 @@ import json
 import asyncio
 import aiomqtt
 from enum import Enum
+import sys
+import os
 
 student_id = "6310301015"
 
-class MachineStatus(Enum):
-    pressure = round(random.uniform(2000,3000), 2)
-    temperature = round(random.uniform(25.0,40.0), 2)
+class MachineStatus():
+    def __init__(self) -> None:
+        self.fulldetect = 0
+        self.heatreach = 1
 
-class MachineMaintStatus(Enum):
-    filter = random.choice(["clear", "clogged"])
-    noise = random.choice(["quiet", "noisy"])
+class MachineMaintStatus():
+    def __init__(self) -> None:
+        self.filter = random.choice(["clear", "clogged"])
+        self.noise = random.choice(["quiet", "noisy"])
 
 class WashingMachine:
     def __init__(self, serial):
         self.MACHINE_STATUS = 'OFF'
         self.SERIAL = serial
-        self.Task = None
 
-    def Cancel(self):
-        if self.Task != None:
-            self.Task.cancel()
-            self.Task = None
+    async def waiting(self):
+        try:
+            print(f'{time.ctime()} - Start waiting')
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            print(f'{time.ctime()} - Waiting function is canceled!')
+            raise
+
+        print(f'{time.ctime()} - Waiting 10 second already! -> TIMEOUT!')
+        self.MACHINE_STATUS = 'FAULT'
+        self.FAULT_TYPE = 'TIMEOUT'
+        print(
+            f'{time.ctime()} - [{self.SERIAL}] STATUS: {self.MACHINE_STATUS}')
+
+    async def waiting_task(self):
+        self.task = asyncio.create_task(self.waiting())
+        return self.task
+
+    async def cancel_waiting(self):
+        self.task.cancel()
+        try:
+            await self.task
+        except asyncio.CancelledError:
+            print(f'{time.ctime()} - Get message before timeout!')
 
 async def publish_message(w, client, app, action, name, value):
     print(f"{time.ctime()} - [{w.SERIAL}] {name}:{value}")
     await asyncio.sleep(2)
     payload = {
-                "action"    : "get",
-                "project"   : student_id,
-                "model"     : "model-01",
-                "serial"    : w.SERIAL,
-                "name"      : name,
-                "value"     : value
-            }
-    print(f"{time.ctime()} - PUBLISH - [{w.SERIAL}] - {payload['name']} > {payload['value']}")
-    await client.publish(f"v1cdti/{app}/{action}/{student_id}/model-01/{w.SERIAL}"
-                        , payload=json.dumps(payload))
-    
-async def Roaming(w, name):
-    print(f"{time.ctime()} - PUBLISH - [{w.SERIAL} - {w.MACHINE_STATUS}] {name} START")
-    await asyncio.sleep(3600)
+        "action": "get",
+        "project": student_id,
+        "model": "model-01",
+        "serial": w.SERIAL,
+        "name": name,
+        "value": value
+    }
+    print(
+        f"{time.ctime()} - PUBLISH - [{w.SERIAL}] - {payload['name']} > {payload['value']}")
+    await client.publish(f"v1cdti/{app}/{action}/{student_id}/model-01/{w.SERIAL}", payload=json.dumps(payload))
 
-async def Running(w, action):
-    print(f"{time.ctime()} - [{w.SERIAL}-{w.MACHINE_STATUS}] {action} START")
-
-    if action == "FILLWATER":
-        # Simulate filling water
-        await asyncio.sleep(10) 
-    if action == "HEATMAKER":
-        # Simulate heating
-        await asyncio.sleep(10) 
-
-
-async def CoroWashingMachine(w, client):
+async def CoroWashingMachine(w, w_sensor, client):
+    # washing coroutine
     while True:
-        wait_next = round(10*random.random(),2)
-        print(f"{time.ctime()} - [{w.SERIAL}-{w.MACHINE_STATUS}] Waiting to start... {wait_next} seconds.")
+        wait_next = round(10*random.random(), 2)
+        print(
+            f"{time.ctime()} - [{w.SERIAL}] Waiting new message... {wait_next} seconds.")
         await asyncio.sleep(wait_next)
         if w.MACHINE_STATUS == 'OFF':
             continue
-        if w.MACHINE_STATUS in ['READY', 'HEATMAKER']:
+
+        if w.MACHINE_STATUS == 'READY':
             print(f"{time.ctime()} - [{w.SERIAL}-{w.MACHINE_STATUS}]")
+            await publish_message(w, client, 'hw', 'get', 'STATUS', 'READY')
 
-            if w.MACHINE_STATUS == 'READY':
-                await publish_message(w, client, "app", "get", "STATUS", "READY")
-                await publish_message(w, client, "app", "get", "STATUS", "FILLWATER")
-                w.Task = asyncio.create_task(Running(w, "FILLWATER"))
-            else:
-                await publish_message(w, client, "app", "get", "STATUS", "HEATMAKER")
-                w.Task = asyncio.create_task(Running(w, "HEATMAKER"))
+            await publish_message(w, client, 'hw', 'get', 'DOOR', 'CLOSE')
 
-            wait_coro = asyncio.wait_for(w.Task, timeout = 10)
+            w.MACHINE_STATUS = 'FILLING'
+            await publish_message(w, client, 'hw', 'get', 'STATUS', 'FILLING')
+            task = w.waiting_task()
+            await task
 
-            try:
-                await wait_coro
-            except asyncio.TimeoutError:
-                print(f"{time.ctime()} - [{w.SERIAL}] FILLWATER TIMEOUT")
-                await publish_message(w, client, "app", "get", "FAULT", "TIMEOUT")
-                w.MACHINE_STATUS = 'FAULT'
-                await publish_message(w, client, "app", "get", "STATUS", w.MACHINE_STATUS)
-                continue
+        if w.MACHINE_STATUS == 'FAULT':
+            await publish_message(w, client, 'hw', 'get', 'FAULT', w.FAULT_TYPE)
+            while w.MACHINE_STATUS == 'FAULT':
+                print(
+                    f"{time.ctime()} - [{w.SERIAL}] Waiting to clear fault...")
+                await asyncio.sleep(1)
 
-            except asyncio.CancelledError:
-                print(f"{time.ctime()} - [{w.SERIAL}] {w.MACHINE_STATUS} Cancelled")
-                if w.MACHINE_STATUS == 'READY':
-                    w.MACHINE_STATUS = 'HEATMAKER'
-                    await publish_message(w, client, "app", "get", "STATUS", "HEATMAKER")
+        if w.MACHINE_STATUS == 'HEATING':
+            task = w.waiting_task()
+            await task
+            while w.MACHINE_STATUS == 'HEATING':
+                await asyncio.sleep(2)
 
-
-
-            # door close
-
-            # fill water untill full level detected within 10 seconds if not full then timeout 
-
-            # heat water until temperature reach 30 celcius within 10 seconds if not reach 30 celcius then timeout
-
-            # wash 10 seconds, if out of balance detected then fault
-
-            # rinse 10 seconds, if motor failure detect then fault
-
-            # spin 10 seconds, if motor failure detect then fault
-
-            # ready state set 
-
-            # When washing is in FAULT state, wait until get FAULTCLEARED
-
-            w.MACHINE_STATUS = 'OFF'
-            await publish_message(w, client, "app", "get", "STATUS", w.MACHINE_STATUS)
+        if w.MACHINE_STATUS == 'WASHING':
             continue
-            
 
-async def listen(w, client):
+async def listen(w, w_sensor, client):
     async with client.messages() as messages:
         await client.subscribe(f"v1cdti/hw/set/{student_id}/model-01/{w.SERIAL}")
         async for message in messages:
-            m_decode = json.loads(message.payload)
+            mgs_decode = json.loads(message.payload)
             if message.topic.matches(f"v1cdti/hw/set/{student_id}/model-01/{w.SERIAL}"):
-                # set washing machine status
-                print(f"{time.ctime()} - MQTT - [{m_decode['serial']}]:{m_decode['name']} => {m_decode['value']}")
-                if (m_decode['name']=="STATUS" and m_decode['value']=="READY"):
-                    w.MACHINE_STATUS = 'READY'
-'''                
-async def cancel_me():
-    print('cancel_me(): before sleep')
+                print(
+                    f"FROM MQTT: [{mgs_decode['serial']} {mgs_decode['name']} {mgs_decode['value']}]")
 
-    try:
-        # Wait for 1 hour
-        await asyncio.sleep(10)
-    except asyncio.CancelledError:
-        print('cancel_me(): cancel sleep')
-        raise
-    finally:
-        print('cancel_me(): after sleep')]
+                if mgs_decode['name'] == "STATUS":
+                    w.MACHINE_STATUS = mgs_decode['value']
 
-async def make_request_with_timeout():
-    try:
-        async with asyncio.timeout(1):
-            # Structured block affected by the timeout:
-            await make_request()
-            await make_another_request()
-    except TimeoutError:
-        log("There was a timeout")
-    # Outer code not affected by the timeout:
-    await unrelated_code()
-'''
+                if w.MACHINE_STATUS == 'FILLING':
+                    if mgs_decode['name'] == "WATERLEVEL":
+                        w_sensor.fulldetect = mgs_decode['value']
+                        if w_sensor.fulldetect == 'FULL':
+                            w.MACHINE_STATUS = 'HEATING'
+                            print(
+                                f'{time.ctime()} - [{w.SERIAL}] STATUS: {w.MACHINE_STATUS}')
+                            await publish_message(w, client, 'hw', 'get', 'STATUS', w.MACHINE_STATUS)
+
+                        await w.cancel_waiting()
+
+                if w.MACHINE_STATUS == 'HEATING':
+                    if mgs_decode['name'] == "TEMPERATURE":
+                        w_sensor.heatreach = mgs_decode['value']
+                        if w_sensor.heatreach == 'REACH':
+                            w.MACHINE_STATUS = 'WASH'
+                            print(
+                                f'{time.ctime()} - [{w.SERIAL}] STATUS: {w.MACHINE_STATUS}')
+                            await publish_message(w, client, 'hw', 'get', 'STATUS', w.MACHINE_STATUS)
+
+                        await w.cancel_waiting()
+
+                if mgs_decode['name'] == "FAULT":
+                    if mgs_decode['value'] == 'CLEAR':
+                        w.MACHINE_STATUS = 'OFF'
+                        await publish_message(w, client, 'hw', 'get', 'STATUS', w.MACHINE_STATUS)
+
 async def main():
     w = WashingMachine(serial='SN-001')
+    w_sensor = MachineStatus()
+    # async with aiomqtt.Client("test.mosquitto.org") as client:
     async with aiomqtt.Client("broker.hivemq.com") as client:
-        await asyncio.gather(listen(w, client) , CoroWashingMachine(w, client))
+        await asyncio.gather(listen(w, w_sensor, client), CoroWashingMachine(w, w_sensor, client))
 
-import sys
-import os
-# Change to the "Selector" event loop if platform is Windows
 if sys.platform.lower() == "win32" or os.name.lower() == "nt":
     from asyncio import set_event_loop_policy, WindowsSelectorEventLoopPolicy
     set_event_loop_policy(WindowsSelectorEventLoopPolicy())
